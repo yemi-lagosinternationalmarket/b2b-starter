@@ -1,0 +1,2 @@
+# Local-disk storage backend output (StorageClient impl in src/storage/local-disk.ts).
+.messaging-storage/

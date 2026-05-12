@@ -15,11 +15,13 @@
   },
   "dependencies": {
     "@b2b-starter/shared-types": "workspace:*",
+    "@fastify/multipart": "^10.0.0",
     "drizzle-orm": "^0.36.4",
     "fastify": "^5.1.0",
     "postgres": "^3.4.5"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.4.5",
     "@types/node": "^20.0.0",
     "drizzle-kit": "^0.28.1",
     "tsx": "^4.19.2",
