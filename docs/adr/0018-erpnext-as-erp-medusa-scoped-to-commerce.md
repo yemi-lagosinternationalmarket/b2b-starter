@@ -52,7 +52,7 @@ Under these rules, failure / scaling / swappability isolation is at the service 
 - **~4 Plan-A slices drop or transform** (Vendor / VendorItem / ProductProcurement / PurchaseOrder custom Medusa modules become "configure ERPNext + LIM Custom App + integrate via REST" issues).
 - **Plan B unchanged.**
 - **Plan C capability ports unchanged** in shape; write paths now hit Frappe REST for procurement state.
-- **New work**: hosting ERPNext (Frappe Cloud managed initially, or self-host on Fly/Railway), the `lim_procurement` Custom App git repo, initial DocType customization, Frappe framework expertise (Python + JS) for ERP-side customizations.
+- **New work**: hosting ERPNext (Frappe Cloud managed initially, or self-host on Fly/Railway), the `procureops` Custom App git repo, initial DocType customization, Frappe framework expertise (Python + JS) for ERP-side customizations.
 - **Eventual retirements**: QBO retires when ERPNext Accounts is in production; Notion retires as the operational ERP when ERPNext is.
 - **The B2B storefront** (Slice 5+) becomes a clean Medusa project — Product/Variant/Category mirror from ERPNext Item; Customers/Companies/Quotes/Approvals stay in Medusa where they belong.
 - **Three catalogs, three flows.** ERPNext Item is canonical for buying + internal records (LIM-owned, writable via Frappe REST). Medusa Product is canonical for online wholesale storefront (pulled from ERPNext, writable via Medusa workflows). Toast Catalog is canonical for POS sales (Toast-owned, editable only via Toast UI / Bulk Import CSV; we read via API). catalog-health-worker is the reconciliation layer that audits drift between all three and surfaces it for human resolution.

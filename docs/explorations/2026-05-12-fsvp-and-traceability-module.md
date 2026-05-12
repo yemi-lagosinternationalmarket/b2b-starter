@@ -12,7 +12,7 @@ LIM has internal exposure right now. Other diaspora grocers (African, Caribbean,
 
 ## What it would be
 
-A module sitting on top of the ERPNext platform we're building. Custom DocTypes in the `lim_procurement` Custom App (or a separate `lim_fsvp` Custom App — see licensing discussion below):
+A module sitting on top of the ERPNext platform we're building. Custom DocTypes in the `procureops` Custom App (or a separate `lim_fsvp` Custom App — see licensing discussion below):
 
 - **Foreign Supplier Profile** — FDA Food Facility Registration, GFSI scheme certifications (BRC, SQF, FSSC 22000), prior notice history, import alert status, last audit date, hazard assessment summary. Linked one-to-one to Supplier.
 - **Hazard Analysis** — per-(food, supplier) record identifying biological / chemical (incl. radiological) / physical hazards, requires-control flags, SAHCODHA determination, reasoning. Pre-populated by templates per food category (dried/smoked fish has very different hazards than palm oil than yam flour).

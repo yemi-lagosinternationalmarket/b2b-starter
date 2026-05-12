@@ -6,7 +6,7 @@ Guidance for AI coding agents working in this repo. `CLAUDE.md` is a symlink to 
 
 LIM's commerce + procurement platform is a **service-oriented architecture across multiple runtimes**: **ERPNext** (Frappe) is the system of record for procurement / vendors / items / inventory / accounting / BOMs; **Medusa** is scoped to commerce primitives (B2B Company/Employee/Quote/Approval + future wholesale storefront); **stealth** is the agent layer (Temporal worker + AI capabilities); **`apps/messaging`** is a multi-channel inbound/outbound communications peer service; **catalog-health-worker** audits Toast Catalog vs ERPNext Item drift. Read **ADR 0018** before doing any architectural work.
 
-The first big call before reading anything else: **does the work touch procurement data (Supplier/PO/Item/Inventory/GL)? It lives in ERPNext, not Medusa.** Build it in the `lim_procurement` Custom App (separate repo, see ADR 0019) using Frappe primitives.
+The first big call before reading anything else: **does the work touch procurement data (Supplier/PO/Item/Inventory/GL)? It lives in ERPNext, not Medusa.** Build it in the `procureops` Custom App (separate repo, see ADR 0019) using Frappe primitives.
 
 ## Repo at a glance
 
@@ -18,7 +18,7 @@ Turborepo monorepo. The `b2b-starter` repo holds the Medusa side + monorepo coor
 | `apps/storefront` (this repo) | Next.js 15 storefront | Next.js |
 | `apps/messaging` (this repo) | Fastify + Drizzle messaging service — channel-agnostic inbound/outbound (email/SMS/Slack/WhatsApp/voice/manual) | Node, Postgres `messaging` schema |
 | `apps/procurement-agent` (this repo) | Temporal worker — stealth's AI capabilities, capability shape per ADR 0016 | Node, Temporal Cloud |
-| `lim_procurement` ([separate repo](https://github.com/yemi-lagosinternationalmarket/lim-procurement)) | LIM-specific Frappe Custom App — Custom Fields + Custom DocTypes + whitelisted REST methods on top of ERPNext | Python (Frappe) |
+| `procureops` ([separate repo](https://github.com/yemi-lagosinternationalmarket/procureops)) | LIM-specific Frappe Custom App — Custom Fields + Custom DocTypes + whitelisted REST methods on top of ERPNext | Python (Frappe) |
 | `catalog-health-worker` (separate repo) | Vercel Workflow DevKit — daily Toast catalog audit; pivots to audit Toast vs ERPNext Item drift | Vercel Workflows + Upstash |
 | `stealth` (separate repo) | Archive reference for the prior Temporal+Drizzle+AI-Gateway design; not deployed; capability prompts/schemas/tools are being ported into `apps/procurement-agent` | — |
 
@@ -35,7 +35,7 @@ Turborepo monorepo. The `b2b-starter` repo holds the Medusa side + monorepo coor
 - **0016** — capability shape (prompt + Zod schema + read-only tools + Temporal activity wrapper)
 - **0017** — considered Conductor OSS; staying with Temporal
 - **0018** — **the pivot** — ERPNext as ERP system of record, Medusa scoped to commerce
-- **0019** — LIM Custom App licensing posture (separable Frappe app, ERPNext GPL v3, license `lim_procurement` GPL v3 if ever distributed)
+- **0019** — LIM Custom App licensing posture (separable Frappe app, ERPNext GPL v3, license `procureops` GPL v3 if ever distributed)
 
 ## Domain language
 
@@ -59,13 +59,13 @@ For framework learning end-to-end: `learn-medusa:learning-medusa`. Fall back to 
 
 ### ERPNext / Frappe (procurement, inventory, accounting, BOMs)
 
-LIM-specific extensions live in the **`lim_procurement` Custom App** in its own repo. Rules from ADR 0019:
+LIM-specific extensions live in the **`procureops` Custom App** in its own repo. Rules from ADR 0019:
 
 - **Don't fork ERPNext.** Use hooks, Custom Fields, whitelisted REST methods.
 - **Don't import private ERPNext modules** — use documented Frappe Framework primitives (`frappe.get_doc`, `frappe.db.get_value`, `@frappe.whitelist`, hooks).
-- **Custom Fields go in Fixtures** (`lim_procurement/lim_procurement/fixtures/custom_field.json`) — versioned in git, portable across environments.
+- **Custom Fields go in Fixtures** (`procureops/procureops/fixtures/custom_field.json`) — versioned in git, portable across environments.
 - **Custom DocTypes only when ERPNext has no native equivalent** (e.g., `LIM Activity` for cross-system audit log; `LIM Vendor Tag` if Supplier Group doesn't cover it).
-- **Tests in pytest** under `lim_procurement/tests/`. Use Frappe's test runner.
+- **Tests in pytest** under `procureops/tests/`. Use Frappe's test runner.
 
 No first-class Frappe skill is installed yet. Lean on ERPNext docs (https://docs.erpnext.com), Frappe Framework docs (https://frappeframework.com), and adapt patterns from existing Custom Apps in the ERPNext ecosystem.
 
@@ -85,7 +85,7 @@ Capability shape (ADR 0016): one folder per capability under `apps/procurement-a
 - `activity.test.ts` — Vitest with `@temporalio/testing`, fixture-driven, golden snapshots
 
 Write paths target three systems:
-- **Procurement state** → Frappe REST (e.g., `lim_procurement.api.create_po_draft`)
+- **Procurement state** → Frappe REST (e.g., `procureops.api.create_po_draft`)
 - **Commerce state** → Medusa SDK (`sdk.admin.workflows.<name>.run`)
 - **Messaging state** → `apps/messaging` HTTP API
 
@@ -113,7 +113,7 @@ When closing a superseded or pivoted issue, leave a comment explaining the super
 - **Don't commit `workflow_comparison.md`** (research artifact, deleted; ignore if it reappears).
 - **For Temporal work**: invoke `temporal-developer` skill before writing workflows or activities.
 - **For Medusa work**: invoke the relevant `medusa-dev` skill before writing modules, workflows, or API routes.
-- **For ERPNext work**: read ADR 0019 first. Stay in the `lim_procurement` repo. Use Fixtures, not patches.
+- **For ERPNext work**: read ADR 0019 first. Stay in the `procureops` repo. Use Fixtures, not patches.
 - **Pivot communication**: when an architectural shift lands (like ADR 0018), update CONTEXT.md, write/supersede ADRs, re-cut affected issues (close old + create new), update this file.
 
 ## Skills inventory (relevant to this repo)
