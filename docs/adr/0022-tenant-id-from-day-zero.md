@@ -22,8 +22,10 @@ Per ADR 0021, the SaaS multi-tenancy pattern is site-per-tenant for ERPNext data
 1. **Every consumer endpoint takes `tenant_id` from the auth context** — never trust a client-supplied tenant_id without auth verification. Per-tenant API keys (issued at onboarding) carry the tenant_id claim.
 2. **Every list/read endpoint scopes by tenant_id** before returning results. Cross-tenant queries are forbidden at the application layer.
 3. **Indexes lead with `tenant_id`** where it's a frequent filter (it almost always is).
-4. **Tests cover the negative case**: an attempt to read another tenant's data returns zero rows or 403.
-5. **In v0**: the hardcoded LIM tenant_id is loaded from env. Code reads it once at startup. Every persistence call passes it.
+4. **Cross-tenant single-resource reads return 404, not 403.** Returning 403 leaks the existence of resources owned by other tenants ("this ID exists, just not yours"); 404 doesn't. Same posture as GitHub for private repos.
+5. **Unique constraints that should be tenant-scoped include tenant_id in the constraint.** E.g., content-addressed dedup like `attachment.sha256` is `UNIQUE(tenant_id, sha256)` — cross-tenant content sharing is a privacy issue regardless of intent.
+6. **Tests cover the negative case**: an attempt to read another tenant's data returns 404 (single-resource) or zero rows (list).
+7. **In v0**: the hardcoded LIM tenant_id is loaded from env. Code reads it once at startup. Every persistence call passes it.
 
 ## Consequences
 
