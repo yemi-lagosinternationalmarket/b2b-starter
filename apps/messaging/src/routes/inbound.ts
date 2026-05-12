@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { and, asc, desc, eq, gte, lt, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, lt, lte, or, sql, type SQL } from "drizzle-orm";
 import type {
   AttachmentDto,
   CreateInboundMessageBody,
@@ -23,6 +23,7 @@ import {
   type InboundMessageRow,
 } from "../db/schema.js";
 import type { StorageClient } from "../storage/index.js";
+import { resolveTenantId } from "../tenant.js";
 
 const VALID_CHANNELS: ReadonlySet<MessagingChannel> = new Set([
   "email",
@@ -108,6 +109,7 @@ function toMessageDto(
 ): InboundMessageDto {
   return {
     id: row.id,
+    tenant_id: row.tenantId,
     channel,
     channel_account_id: row.channelAccountId,
     thread_id: row.threadId,
@@ -130,6 +132,7 @@ function toMessageDto(
 function toAttachmentDto(row: AttachmentRow): AttachmentDto {
   return {
     id: row.id,
+    tenant_id: row.tenantId,
     message_id: row.messageId,
     message_direction: row.messageDirection,
     sha256: row.sha256,
@@ -152,12 +155,16 @@ function toAttachmentDto(row: AttachmentRow): AttachmentDto {
  * we lazily upsert a channel_account keyed on (channel='manual', address='manual').
  * Real channels (email/sms/...) will be required to pre-exist in B.2+.
  */
-async function ensureManualChannelAccount(db: MessagingDb): Promise<string> {
+async function ensureManualChannelAccount(
+  db: MessagingDb,
+  tenantId: string,
+): Promise<string> {
   const existing = await db
     .select({ id: channelAccount.id })
     .from(channelAccount)
     .where(
       and(
+        eq(channelAccount.tenantId, tenantId),
         eq(channelAccount.channel, "manual"),
         eq(channelAccount.address, "manual"),
       ),
@@ -167,6 +174,7 @@ async function ensureManualChannelAccount(db: MessagingDb): Promise<string> {
   const inserted = await db
     .insert(channelAccount)
     .values({
+      tenantId,
       channel: "manual",
       address: "manual",
       displayName: "Manual entry",
@@ -186,6 +194,7 @@ function manualThreadKey(fromIdentity: string): string {
 
 async function ensureThread(
   db: MessagingDb,
+  tenantId: string,
   channel: ChannelValue,
   externalThreadId: string,
   vendorId: string | null,
@@ -196,6 +205,7 @@ async function ensureThread(
     .from(messageThread)
     .where(
       and(
+        eq(messageThread.tenantId, tenantId),
         eq(messageThread.channel, channel),
         eq(messageThread.externalThreadId, externalThreadId),
       ),
@@ -215,6 +225,7 @@ async function ensureThread(
   const inserted = await db
     .insert(messageThread)
     .values({
+      tenantId,
       channel,
       externalThreadId,
       vendorId,
@@ -255,6 +266,11 @@ export async function registerInboundRoutes(
   /* ---- POST /v1/inbound (JSON or multipart) -------------------------- */
 
   app.post("/v1/inbound", async (req, reply) => {
+    // Resolve tenant_id once per request. B.1 sources it from the env var
+    // (ADR 0022 / issue #7). B.3 will replace this call with an auth-header
+    // extraction — the single resolver point is the whole point.
+    const tenantId = resolveTenantId();
+
     const contentType = req.headers["content-type"] ?? "";
     let body: CreateInboundMessageBody;
     let attachmentParts: MultipartAttachment[] = [];
@@ -270,6 +286,7 @@ export async function registerInboundRoutes(
     const result = await createInboundMessage(
       opts.db,
       opts.storage,
+      tenantId,
       body,
       attachmentParts,
     );
@@ -280,6 +297,7 @@ export async function registerInboundRoutes(
   /* ---- GET /v1/inbound -------------------------------------------- */
 
   app.get("/v1/inbound", async (req) => {
+    const tenantId = resolveTenantId();
     const q = (req.query ?? {}) as Record<string, string | undefined>;
     const queryParams: ListInboundMessagesQuery = {
       channel: q.channel as MessagingChannel | undefined,
@@ -291,13 +309,14 @@ export async function registerInboundRoutes(
       cursor: q.cursor,
       limit: q.limit ? Number(q.limit) : undefined,
     };
-    return listInboundMessages(opts.db, queryParams);
+    return listInboundMessages(opts.db, tenantId, queryParams);
   });
 
   /* ---- GET /v1/inbound/:id --------------------------------------- */
 
   app.get<{ Params: { id: string } }>("/v1/inbound/:id", async (req, reply) => {
-    const result = await getInboundMessage(opts.db, req.params.id);
+    const tenantId = resolveTenantId();
+    const result = await getInboundMessage(opts.db, tenantId, req.params.id);
     if (!result) {
       reply.code(404).send({ error: "not_found" });
       return;
@@ -385,6 +404,7 @@ interface MultipartPart {
 export async function createInboundMessage(
   db: MessagingDb,
   storage: StorageClient,
+  tenantId: string,
   body: CreateInboundMessageBody,
   attachments: MultipartAttachment[],
 ): Promise<InboundMessageWithAttachmentsDto> {
@@ -421,10 +441,11 @@ export async function createInboundMessage(
     throw httpError(400, "received_at must be an ISO-8601 timestamp");
   }
 
-  const channelAccountId = await ensureManualChannelAccount(db);
+  const channelAccountId = await ensureManualChannelAccount(db, tenantId);
   const externalMessageId = body.external_message_id ?? `manual:${randomUUID()}`;
   const threadId = await ensureThread(
     db,
+    tenantId,
     "manual",
     manualThreadKey(body.from_identity),
     vendorId,
@@ -434,6 +455,7 @@ export async function createInboundMessage(
   const inserted = await db
     .insert(inboundMessage)
     .values({
+      tenantId,
       channelAccountId,
       threadId,
       externalMessageId,
@@ -469,6 +491,7 @@ export async function createInboundMessage(
     const insertedAttachments = await db
       .insert(attachment)
       .values({
+        tenantId,
         messageId: messageRow.id,
         messageDirection: "inbound",
         sha256,
@@ -478,7 +501,7 @@ export async function createInboundMessage(
         storagePath,
       })
       .onConflictDoNothing({
-        target: [attachment.messageId, attachment.sha256],
+        target: [attachment.tenantId, attachment.messageId, attachment.sha256],
       })
       .returning();
     if (insertedAttachments[0]) {
@@ -490,6 +513,7 @@ export async function createInboundMessage(
         .from(attachment)
         .where(
           and(
+            eq(attachment.tenantId, tenantId),
             eq(attachment.messageId, messageRow.id),
             eq(attachment.sha256, sha256),
           ),
@@ -507,14 +531,23 @@ export async function createInboundMessage(
 
 export async function listInboundMessages(
   db: MessagingDb,
+  tenantId: string,
   query: ListInboundMessagesQuery,
 ): Promise<ListInboundMessagesResponse> {
+  // Tenant guard: enforced at the entry point of every list query. This is
+  // the AC from issue #7 — "explicit tenant_id filter is required on every
+  // list endpoint" — implemented as a hard requirement on the function
+  // signature.
+  if (!tenantId) {
+    throw httpError(500, "tenant_id is required for list queries");
+  }
+
   const limit = Math.min(
     Math.max(Number(query.limit ?? DEFAULT_PAGE_SIZE), 1),
     MAX_PAGE_SIZE,
   );
 
-  const conditions = [];
+  const conditions: SQL[] = [eq(inboundMessage.tenantId, tenantId)];
 
   if (query.channel) {
     if (!isValidChannel(query.channel)) {
@@ -602,8 +635,16 @@ export async function listInboundMessages(
 
 export async function getInboundMessage(
   db: MessagingDb,
+  tenantId: string,
   id: string,
 ): Promise<InboundMessageWithAttachmentsDto | null> {
+  if (!tenantId) {
+    throw httpError(500, "tenant_id is required for get queries");
+  }
+  // Tenant filter on both the message and the attachment lookups. A row
+  // belonging to a different tenant returns 404 — indistinguishable from a
+  // genuinely missing row, which is the right behavior for tenant
+  // isolation (no existence-oracle leak).
   const rows = await db
     .select({
       message: inboundMessage,
@@ -614,7 +655,12 @@ export async function getInboundMessage(
       channelAccount,
       eq(inboundMessage.channelAccountId, channelAccount.id),
     )
-    .where(eq(inboundMessage.id, id))
+    .where(
+      and(
+        eq(inboundMessage.tenantId, tenantId),
+        eq(inboundMessage.id, id),
+      ),
+    )
     .limit(1);
   const row = rows[0];
   if (!row) return null;
@@ -624,6 +670,7 @@ export async function getInboundMessage(
     .from(attachment)
     .where(
       and(
+        eq(attachment.tenantId, tenantId),
         eq(attachment.messageId, id),
         eq(attachment.messageDirection, "inbound"),
       ),

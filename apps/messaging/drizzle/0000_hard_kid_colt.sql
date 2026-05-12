@@ -4,6 +4,7 @@ CREATE TYPE "messaging"."channel" AS ENUM('email', 'sms', 'whatsapp', 'slack', '
 CREATE TYPE "messaging"."message_direction" AS ENUM('inbound', 'outbound');--> statement-breakpoint
 CREATE TABLE IF NOT EXISTS "messaging"."attachment" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"tenant_id" uuid NOT NULL,
 	"message_id" uuid,
 	"message_direction" "messaging"."message_direction" NOT NULL,
 	"sha256" text NOT NULL,
@@ -17,6 +18,7 @@ CREATE TABLE IF NOT EXISTS "messaging"."attachment" (
 --> statement-breakpoint
 CREATE TABLE IF NOT EXISTS "messaging"."channel_account" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"tenant_id" uuid NOT NULL,
 	"channel" "messaging"."channel" NOT NULL,
 	"address" text NOT NULL,
 	"display_name" text,
@@ -30,6 +32,7 @@ CREATE TABLE IF NOT EXISTS "messaging"."channel_account" (
 --> statement-breakpoint
 CREATE TABLE IF NOT EXISTS "messaging"."inbound_message" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"tenant_id" uuid NOT NULL,
 	"channel_account_id" uuid NOT NULL,
 	"thread_id" uuid,
 	"external_message_id" text NOT NULL,
@@ -49,6 +52,7 @@ CREATE TABLE IF NOT EXISTS "messaging"."inbound_message" (
 --> statement-breakpoint
 CREATE TABLE IF NOT EXISTS "messaging"."message_thread" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"tenant_id" uuid NOT NULL,
 	"channel" "messaging"."channel" NOT NULL,
 	"external_thread_id" text NOT NULL,
 	"vendor_id" text,
@@ -70,14 +74,14 @@ EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
 --> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "attachment_sha256_idx" ON "messaging"."attachment" USING btree ("sha256");--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "attachment_message_dir_idx" ON "messaging"."attachment" USING btree ("message_direction","message_id");--> statement-breakpoint
-CREATE UNIQUE INDEX IF NOT EXISTS "attachment_message_sha256_uq" ON "messaging"."attachment" USING btree ("message_id","sha256");--> statement-breakpoint
-CREATE UNIQUE INDEX IF NOT EXISTS "channel_account_channel_address_uq" ON "messaging"."channel_account" USING btree ("channel","address");--> statement-breakpoint
-CREATE UNIQUE INDEX IF NOT EXISTS "inbound_message_account_external_uq" ON "messaging"."inbound_message" USING btree ("channel_account_id","external_message_id");--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "inbound_message_received_idx" ON "messaging"."inbound_message" USING btree ("received_at");--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "inbound_message_vendor_idx" ON "messaging"."inbound_message" USING btree ("vendor_id");--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "inbound_message_purchase_order_idx" ON "messaging"."inbound_message" USING btree ("purchase_order_id");--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "inbound_message_classification_idx" ON "messaging"."inbound_message" USING btree ("classification");--> statement-breakpoint
-CREATE UNIQUE INDEX IF NOT EXISTS "message_thread_channel_external_uq" ON "messaging"."message_thread" USING btree ("channel","external_thread_id");--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "message_thread_vendor_idx" ON "messaging"."message_thread" USING btree ("vendor_id");
+CREATE INDEX IF NOT EXISTS "attachment_tenant_sha256_idx" ON "messaging"."attachment" USING btree ("tenant_id","sha256");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "attachment_tenant_dir_message_idx" ON "messaging"."attachment" USING btree ("tenant_id","message_direction","message_id");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "attachment_tenant_message_sha256_uq" ON "messaging"."attachment" USING btree ("tenant_id","message_id","sha256");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "channel_account_tenant_channel_address_uq" ON "messaging"."channel_account" USING btree ("tenant_id","channel","address");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "inbound_message_tenant_account_external_uq" ON "messaging"."inbound_message" USING btree ("tenant_id","channel_account_id","external_message_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "inbound_message_tenant_received_idx" ON "messaging"."inbound_message" USING btree ("tenant_id","received_at" DESC NULLS LAST);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "inbound_message_tenant_vendor_received_idx" ON "messaging"."inbound_message" USING btree ("tenant_id","vendor_id","received_at" DESC NULLS LAST);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "inbound_message_tenant_purchase_order_received_idx" ON "messaging"."inbound_message" USING btree ("tenant_id","purchase_order_id","received_at" DESC NULLS LAST);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "inbound_message_tenant_classification_idx" ON "messaging"."inbound_message" USING btree ("tenant_id","classification");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "message_thread_tenant_channel_external_uq" ON "messaging"."message_thread" USING btree ("tenant_id","channel","external_thread_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "message_thread_tenant_vendor_idx" ON "messaging"."message_thread" USING btree ("tenant_id","vendor_id");

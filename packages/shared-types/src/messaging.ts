@@ -83,6 +83,12 @@ export interface ListInboundMessagesQuery {
 
 export interface AttachmentDto {
   id: string;
+  /**
+   * SaaS tenant the row belongs to. Always set by the server (from env in
+   * v0, from auth header from B.3 onwards — see ADR 0022). Clients should
+   * not send tenant_id in request bodies; it is server-resolved.
+   */
+  tenant_id: string;
   message_id: string | null;
   message_direction: MessageDirection;
   sha256: string;
@@ -96,6 +102,8 @@ export interface AttachmentDto {
 
 export interface InboundMessageDto {
   id: string;
+  /** Server-resolved tenant (ADR 0022). See AttachmentDto.tenant_id. */
+  tenant_id: string;
   channel: MessagingChannel;
   channel_account_id: string;
   thread_id: string | null;

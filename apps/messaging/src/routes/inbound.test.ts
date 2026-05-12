@@ -3,6 +3,12 @@ import type { FastifyInstance } from "fastify";
 import { buildApp } from "../app.js";
 import { makeTestDb } from "../test-helpers/db.js";
 import { InMemoryStorage } from "../test-helpers/storage.js";
+import { withTenant } from "../test-helpers/tenant.js";
+import {
+  createInboundMessage,
+  listInboundMessages,
+} from "./inbound.js";
+import type { MessagingDb } from "../db/index.js";
 import type {
   CreateInboundMessageResponse,
   InboundMessageWithAttachmentsDto,
@@ -13,8 +19,13 @@ describe("inbound routes", () => {
   let app: FastifyInstance;
   let close: () => Promise<void>;
   let storage: InMemoryStorage;
+  let tenantRestore: () => void;
 
   beforeEach(async () => {
+    // ADR 0022: every request needs a resolvable tenant_id. The test
+    // harness mints a fresh UUID and points the env var at it; each test
+    // gets its own tenant so cases can't leak into each other.
+    ({ restore: tenantRestore } = withTenant());
     const t = await makeTestDb();
     close = t.close;
     storage = new InMemoryStorage();
@@ -25,6 +36,7 @@ describe("inbound routes", () => {
   afterEach(async () => {
     await app.close();
     await close();
+    tenantRestore();
   });
 
   describe("POST /v1/inbound (JSON)", () => {
@@ -320,6 +332,143 @@ describe("inbound routes", () => {
         url: "/v1/inbound/00000000-0000-0000-0000-000000000000",
       });
       expect(r.statusCode).toBe(404);
+    });
+  });
+
+  /* ------------------------------------------------------------------ */
+  /* ADR 0022 — tenant_id isolation                                      */
+  /* ------------------------------------------------------------------ */
+
+  describe("tenant_id isolation (ADR 0022)", () => {
+    it("stamps tenant_id on the response and the underlying row", async () => {
+      // We can't read `tenantId` from the outer scope's withTenant call
+      // directly without exposing it; instead grab the env var (the route
+      // resolves through the same path).
+      const expected = process.env.MESSAGING_DEFAULT_TENANT_ID;
+      const res = await app.inject({
+        method: "POST",
+        url: "/v1/inbound",
+        payload: {
+          channel: "manual",
+          from_identity: "tenant-stamp",
+          to_identities: [],
+          body_plain: "x",
+        },
+      });
+      const data = (res.json() as CreateInboundMessageResponse).data;
+      expect(data.tenant_id).toBe(expected);
+    });
+
+    it("returns 0 rows when querying as a different tenant (cross-tenant isolation)", async () => {
+      // Seed two messages under the current (tenant A) env tenant.
+      for (const id of ["a-1", "a-2"]) {
+        const r = await app.inject({
+          method: "POST",
+          url: "/v1/inbound",
+          payload: {
+            channel: "manual",
+            from_identity: id,
+            to_identities: [],
+            body_plain: "a-msg",
+          },
+        });
+        expect(r.statusCode).toBe(201);
+      }
+
+      // Swap to tenant B and list — must see 0 rows.
+      const switched = withTenant();
+      try {
+        const r = await app.inject({ method: "GET", url: "/v1/inbound" });
+        expect(r.statusCode).toBe(200);
+        const body = r.json() as ListInboundMessagesResponse;
+        expect(body.data).toHaveLength(0);
+        expect(body.next_cursor).toBeNull();
+      } finally {
+        switched.restore();
+      }
+    });
+
+    it("returns 404 on GET /:id when the message belongs to a different tenant", async () => {
+      const created = await app.inject({
+        method: "POST",
+        url: "/v1/inbound",
+        payload: {
+          channel: "manual",
+          from_identity: "owner-a",
+          to_identities: [],
+          body_plain: "secret",
+        },
+      });
+      const id = (created.json() as CreateInboundMessageResponse).data.id;
+
+      const switched = withTenant();
+      try {
+        const r = await app.inject({ method: "GET", url: `/v1/inbound/${id}` });
+        // 404 — not 403 — because we don't want to leak existence to
+        // other tenants. Same response shape as a genuinely missing row.
+        expect(r.statusCode).toBe(404);
+      } finally {
+        switched.restore();
+      }
+    });
+
+    it("filter required: listInboundMessages throws when called without a tenant_id", async () => {
+      // Calling the operation directly with an empty tenant_id (e.g. a
+      // future route that forgets to plumb the resolver) must throw, not
+      // silently return cross-tenant data.
+      // Pull the underlying db from the app's testing setup by spinning a
+      // standalone instance — but the cleanest way to assert is to drive
+      // the function directly. The harness exposes the db it built.
+      const t = await makeTestDb();
+      try {
+        await expect(
+          listInboundMessages(t.db as MessagingDb, "", {}),
+        ).rejects.toThrow(/tenant_id is required/);
+      } finally {
+        await t.close();
+      }
+    });
+
+    it("create + list isolation: messages inserted under tenant A never appear under tenant B", async () => {
+      // Direct operation call (bypassing the HTTP layer) to exercise the
+      // function-signature tenant guard. Same DB, two tenants, distinct
+      // row sets.
+      const t = await makeTestDb();
+      try {
+        const tenantA = "11111111-1111-4111-8111-111111111111";
+        const tenantB = "22222222-2222-4222-8222-222222222222";
+        const stor = new InMemoryStorage();
+
+        await createInboundMessage(
+          t.db as MessagingDb,
+          stor,
+          tenantA,
+          {
+            channel: "manual",
+            from_identity: "a-only",
+            to_identities: [],
+            body_plain: "for A",
+          },
+          [],
+        );
+
+        const aList = await listInboundMessages(
+          t.db as MessagingDb,
+          tenantA,
+          {},
+        );
+        const bList = await listInboundMessages(
+          t.db as MessagingDb,
+          tenantB,
+          {},
+        );
+
+        expect(aList.data).toHaveLength(1);
+        expect(aList.data[0]!.tenant_id).toBe(tenantA);
+        expect(bList.data).toHaveLength(0);
+      } finally {
+        await t.close();
+      }
     });
   });
 });

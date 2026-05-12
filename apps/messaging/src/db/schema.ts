@@ -32,6 +32,14 @@ import {
  * (e.g. `Yusol Foods`, `LIM-PO-2026-00042`) but are stored as opaque text;
  * this service performs no validation against ERPNext. Frappe docnames are
  * typically <150 characters; we use a soft 200-char limit for headroom.
+ *
+ * Per ADR 0022 (forthcoming) / issue #7 SaaS-readiness amendment, every
+ * messaging table carries `tenant_id uuid NOT NULL` from day zero. In v0
+ * (LIM-only), tenant_id is a single hardcoded UUID sourced from the
+ * `MESSAGING_DEFAULT_TENANT_ID` env var. In SaaS mode (12-18mo), it
+ * identifies the customer. Composite indexes are tenant-leading
+ * (e.g. `(tenant_id, channel, received_at DESC)`) so the planner can use
+ * them whether the filter is tenant-only or tenant+secondary.
  */
 export const messagingSchema = pgSchema("messaging");
 
@@ -66,6 +74,8 @@ export const channelAccount = messagingSchema.table(
   "channel_account",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    /** SaaS tenant (ADR 0022). v0: single UUID from MESSAGING_DEFAULT_TENANT_ID. */
+    tenantId: uuid("tenant_id").notNull(),
     channel: channelEnum("channel").notNull(),
     address: text("address").notNull(),
     displayName: text("display_name"),
@@ -82,10 +92,14 @@ export const channelAccount = messagingSchema.table(
     metadata: jsonb("metadata").notNull().default(sql`'{}'::jsonb`),
   },
   (t) => ({
-    channelAddressUq: uniqueIndex("channel_account_channel_address_uq").on(
-      t.channel,
-      t.address,
-    ),
+    /**
+     * Channel + address is unique *per tenant* — two tenants can each have
+     * a `(manual, manual)` account without colliding. tenant_id leads so
+     * tenant-only scans (the common case) also use this index.
+     */
+    tenantChannelAddressUq: uniqueIndex(
+      "channel_account_tenant_channel_address_uq",
+    ).on(t.tenantId, t.channel, t.address),
   }),
 );
 
@@ -105,6 +119,8 @@ export const messageThread = messagingSchema.table(
   "message_thread",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    /** SaaS tenant (ADR 0022). */
+    tenantId: uuid("tenant_id").notNull(),
     channel: channelEnum("channel").notNull(),
     externalThreadId: text("external_thread_id").notNull(),
     /** Opaque ERPNext docname (~150 chars typical, 200 max). */
@@ -119,11 +135,19 @@ export const messageThread = messagingSchema.table(
     metadata: jsonb("metadata").notNull().default(sql`'{}'::jsonb`),
   },
   (t) => ({
-    channelExternalUq: uniqueIndex("message_thread_channel_external_uq").on(
-      t.channel,
-      t.externalThreadId,
+    /**
+     * Uniqueness is per tenant: `(channel, external_thread_id)` can collide
+     * across tenants (e.g. two tenants each running the manual channel),
+     * but never within one tenant. tenant_id leads.
+     */
+    tenantChannelExternalUq: uniqueIndex(
+      "message_thread_tenant_channel_external_uq",
+    ).on(t.tenantId, t.channel, t.externalThreadId),
+    /** Vendor-scoped lookups are always tenant-scoped. */
+    tenantVendorIdx: index("message_thread_tenant_vendor_idx").on(
+      t.tenantId,
+      t.vendorId,
     ),
-    vendorIdx: index("message_thread_vendor_idx").on(t.vendorId),
   }),
 );
 
@@ -141,6 +165,8 @@ export const inboundMessage = messagingSchema.table(
   "inbound_message",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    /** SaaS tenant (ADR 0022). */
+    tenantId: uuid("tenant_id").notNull(),
     channelAccountId: uuid("channel_account_id")
       .notNull()
       .references(() => channelAccount.id),
@@ -166,17 +192,31 @@ export const inboundMessage = messagingSchema.table(
     metadata: jsonb("metadata").notNull().default(sql`'{}'::jsonb`),
   },
   (t) => ({
-    accountExternalUq: uniqueIndex(
-      "inbound_message_account_external_uq",
-    ).on(t.channelAccountId, t.externalMessageId),
-    receivedIdx: index("inbound_message_received_idx").on(t.receivedAt),
-    vendorIdx: index("inbound_message_vendor_idx").on(t.vendorId),
-    purchaseOrderIdx: index("inbound_message_purchase_order_idx").on(
-      t.purchaseOrderId,
+    /**
+     * Idempotency uniqueness — a channel account is already tenant-bound
+     * (FK), so prefixing tenant_id here is mostly belt-and-suspenders for
+     * the planner. Keeps the leadership rule consistent across tables.
+     */
+    tenantAccountExternalUq: uniqueIndex(
+      "inbound_message_tenant_account_external_uq",
+    ).on(t.tenantId, t.channelAccountId, t.externalMessageId),
+    /** Newest-first list endpoint: `WHERE tenant_id = ? ORDER BY received_at DESC`. */
+    tenantReceivedIdx: index("inbound_message_tenant_received_idx").on(
+      t.tenantId,
+      t.receivedAt.desc(),
     ),
-    classificationIdx: index("inbound_message_classification_idx").on(
-      t.classification,
-    ),
+    /** `WHERE tenant_id = ? AND vendor_id = ? ORDER BY received_at DESC`. */
+    tenantVendorReceivedIdx: index(
+      "inbound_message_tenant_vendor_received_idx",
+    ).on(t.tenantId, t.vendorId, t.receivedAt.desc()),
+    /** `WHERE tenant_id = ? AND purchase_order_id = ? ORDER BY received_at DESC`. */
+    tenantPurchaseOrderReceivedIdx: index(
+      "inbound_message_tenant_purchase_order_received_idx",
+    ).on(t.tenantId, t.purchaseOrderId, t.receivedAt.desc()),
+    /** `WHERE tenant_id = ? AND classification = ?`. */
+    tenantClassificationIdx: index(
+      "inbound_message_tenant_classification_idx",
+    ).on(t.tenantId, t.classification),
   }),
 );
 
@@ -196,6 +236,8 @@ export const attachment = messagingSchema.table(
   "attachment",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    /** SaaS tenant (ADR 0022). */
+    tenantId: uuid("tenant_id").notNull(),
     messageId: uuid("message_id"),
     messageDirection: messageDirectionEnum("message_direction").notNull(),
     sha256: text("sha256").notNull(),
@@ -210,20 +252,25 @@ export const attachment = messagingSchema.table(
     metadata: jsonb("metadata").notNull().default(sql`'{}'::jsonb`),
   },
   (t) => ({
-    sha256Idx: index("attachment_sha256_idx").on(t.sha256),
-    messageDirIdx: index("attachment_message_dir_idx").on(
+    /** Content-hash lookups are tenant-scoped (no cross-tenant dedupe). */
+    tenantSha256Idx: index("attachment_tenant_sha256_idx").on(
+      t.tenantId,
+      t.sha256,
+    ),
+    /** "All attachments for direction X under tenant T" — used by message-detail joins. */
+    tenantDirMessageIdx: index("attachment_tenant_dir_message_idx").on(
+      t.tenantId,
       t.messageDirection,
       t.messageId,
     ),
     /**
-     * Unique on (message_id, sha256) so the same file attached twice to the
-     * same message dedupes, but the same content can attach to different
-     * messages.
+     * Unique on (tenant_id, message_id, sha256). Same file attached twice
+     * to the same message still dedupes, same content can attach to
+     * different messages, and tenants are isolated.
      */
-    messageContentUq: uniqueIndex("attachment_message_sha256_uq").on(
-      t.messageId,
-      t.sha256,
-    ),
+    tenantMessageContentUq: uniqueIndex(
+      "attachment_tenant_message_sha256_uq",
+    ).on(t.tenantId, t.messageId, t.sha256),
   }),
 );
 

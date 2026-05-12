@@ -1,5 +1,5 @@
 {
-  "id": "59ffacfb-02f6-4fce-851c-b7746b107de7",
+  "id": "fcc6a4aa-faa1-49b7-8c35-e86d661b5522",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -14,6 +14,12 @@
           "primaryKey": true,
           "notNull": true,
           "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
         },
         "message_id": {
           "name": "message_id",
@@ -74,9 +80,15 @@
         }
       },
       "indexes": {
-        "attachment_sha256_idx": {
-          "name": "attachment_sha256_idx",
+        "attachment_tenant_sha256_idx": {
+          "name": "attachment_tenant_sha256_idx",
           "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
             {
               "expression": "sha256",
               "isExpression": false,
@@ -89,9 +101,15 @@
           "method": "btree",
           "with": {}
         },
-        "attachment_message_dir_idx": {
-          "name": "attachment_message_dir_idx",
+        "attachment_tenant_dir_message_idx": {
+          "name": "attachment_tenant_dir_message_idx",
           "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
             {
               "expression": "message_direction",
               "isExpression": false,
@@ -110,9 +128,15 @@
           "method": "btree",
           "with": {}
         },
-        "attachment_message_sha256_uq": {
-          "name": "attachment_message_sha256_uq",
+        "attachment_tenant_message_sha256_uq": {
+          "name": "attachment_tenant_message_sha256_uq",
           "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
             {
               "expression": "message_id",
               "isExpression": false,
@@ -149,6 +173,12 @@
           "primaryKey": true,
           "notNull": true,
           "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
         },
         "channel": {
           "name": "channel",
@@ -212,9 +242,15 @@
         }
       },
       "indexes": {
-        "channel_account_channel_address_uq": {
-          "name": "channel_account_channel_address_uq",
+        "channel_account_tenant_channel_address_uq": {
+          "name": "channel_account_tenant_channel_address_uq",
           "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
             {
               "expression": "channel",
               "isExpression": false,
@@ -251,6 +287,12 @@
           "primaryKey": true,
           "notNull": true,
           "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
         },
         "channel_account_id": {
           "name": "channel_account_id",
@@ -348,9 +390,15 @@
         }
       },
       "indexes": {
-        "inbound_message_account_external_uq": {
-          "name": "inbound_message_account_external_uq",
+        "inbound_message_tenant_account_external_uq": {
+          "name": "inbound_message_tenant_account_external_uq",
           "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
             {
               "expression": "channel_account_id",
               "isExpression": false,
@@ -369,13 +417,19 @@
           "method": "btree",
           "with": {}
         },
-        "inbound_message_received_idx": {
-          "name": "inbound_message_received_idx",
+        "inbound_message_tenant_received_idx": {
+          "name": "inbound_message_tenant_received_idx",
           "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
             {
               "expression": "received_at",
               "isExpression": false,
-              "asc": true,
+              "asc": false,
               "nulls": "last"
             }
           ],
@@ -384,28 +438,25 @@
           "method": "btree",
           "with": {}
         },
-        "inbound_message_vendor_idx": {
-          "name": "inbound_message_vendor_idx",
+        "inbound_message_tenant_vendor_received_idx": {
+          "name": "inbound_message_tenant_vendor_received_idx",
           "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
             {
               "expression": "vendor_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "inbound_message_purchase_order_idx": {
-          "name": "inbound_message_purchase_order_idx",
-          "columns": [
+            },
             {
-              "expression": "purchase_order_id",
+              "expression": "received_at",
               "isExpression": false,
-              "asc": true,
+              "asc": false,
               "nulls": "last"
             }
           ],
@@ -414,9 +465,42 @@
           "method": "btree",
           "with": {}
         },
-        "inbound_message_classification_idx": {
-          "name": "inbound_message_classification_idx",
+        "inbound_message_tenant_purchase_order_received_idx": {
+          "name": "inbound_message_tenant_purchase_order_received_idx",
           "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "purchase_order_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "received_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "inbound_message_tenant_classification_idx": {
+          "name": "inbound_message_tenant_classification_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
             {
               "expression": "classification",
               "isExpression": false,
@@ -477,6 +561,12 @@
           "notNull": true,
           "default": "gen_random_uuid()"
         },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
         "channel": {
           "name": "channel",
           "type": "channel",
@@ -526,9 +616,15 @@
         }
       },
       "indexes": {
-        "message_thread_channel_external_uq": {
-          "name": "message_thread_channel_external_uq",
+        "message_thread_tenant_channel_external_uq": {
+          "name": "message_thread_tenant_channel_external_uq",
           "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
             {
               "expression": "channel",
               "isExpression": false,
@@ -547,9 +643,15 @@
           "method": "btree",
           "with": {}
         },
-        "message_thread_vendor_idx": {
-          "name": "message_thread_vendor_idx",
+        "message_thread_tenant_vendor_idx": {
+          "name": "message_thread_tenant_vendor_idx",
           "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
             {
               "expression": "vendor_id",
               "isExpression": false,
