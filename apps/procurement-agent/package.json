@@ -3,16 +3,26 @@
   "version": "0.0.0",
   "private": true,
   "description": "Procurement agent app stub — populated in C.0.",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json --noEmit",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
-    "@b2b-starter/shared-types": "workspace:*"
+    "@b2b-starter/shared-types": "workspace:*",
+    "@temporalio/activity": "^1.17.1",
+    "@temporalio/client": "^1.17.1",
+    "@temporalio/worker": "^1.17.1",
+    "@temporalio/workflow": "^1.17.1",
+    "ioredis": "^5.10.1"
   },
   "devDependencies": {
+    "@temporalio/testing": "^1.17.1",
+    "@types/ioredis-mock": "^8.2.7",
     "@types/node": "^20.0.0",
+    "ioredis-mock": "^8.13.1",
     "typescript": "^5.5.3",
     "vitest": "^2.1.9"
   },
