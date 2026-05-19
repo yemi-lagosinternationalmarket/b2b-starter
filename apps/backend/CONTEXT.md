@@ -2,45 +2,52 @@
 
 LIM's procurement and commerce platform. Vocabulary adopted from stealth's procurement glossary (Place / Receive / Pay) plus B2B commerce concepts from Medusa.
 
-Per ADR 0018, **ERPNext is the system of record** for procurement, vendors, items, inventory, accounting, and BOMs. **Medusa is scoped to commerce** — B2B storefront primitives (Company, Employee, Quote, Approval) and the future wholesale storefront. **Stealth (Temporal worker)** orchestrates AI-driven workflows that span both. **`apps/messaging`** is a peer service that handles inbound/outbound communications.
+**Stage 1 (MVP) per ADR 0023:** **Notion is the procurement system of record** — `Vendor Profiles`, `Purchase Orders`, and `Purchase Order Events` databases. Stealth reads/writes via the Notion API. The semantic vocabulary below (Supplier, PO, agent_authority, etc.) is unchanged; only the surface where state lives changes.
+
+**Stage 2 destination per ADR 0018:** ERPNext as ERP system of record (Supplier, Item, PO, Purchase Receipt, Purchase Invoice, Payment Entry, BOM). Migration is a write-target swap inside each capability's `activity.ts`; prompts, schemas, tools, Temporal orchestration unchanged.
+
+**Medusa** is scoped to commerce — B2B storefront primitives (Company, Employee, Quote, Approval) and the future wholesale storefront. **Stealth (Temporal worker)** orchestrates AI-driven workflows. **`apps/messaging`** handles inbound/outbound communications.
 
 When this document and code disagree, fix the code.
 
 ## Phases
 
-- **Place** — agreeing on an order with a Supplier. In ERPNext this spans `Purchase Order` (and optional `Request for Quotation` + `Supplier Quotation`).
-- **Receive** — getting the goods. In ERPNext this is `Purchase Receipt` (with multi-warehouse Stock Entry).
-- **Pay** — settling the bill. In ERPNext this is `Purchase Invoice` → `Payment Entry`, posting to the GL.
+- **Place** — agreeing on an order with a Supplier. MVP: `Purchase Orders` DB row with `Status=Open`, driven by `Purchase Order Events` (`Purchase Request Created` → `Purchase Request Sent` → `Quote Received` → `Purchase Order Created` → `Purchase Order Sent`). Stage 2: ERPNext `Purchase Order` (with optional `Request for Quotation` + `Supplier Quotation`).
+- **Receive** — getting the goods. MVP: `Delivery Received` event on the PO. Stage 2: ERPNext `Purchase Receipt` (with multi-warehouse Stock Entry).
+- **Pay** — settling the bill. MVP: `Invoice Received` → `Invoice Logged in QBO` events; bill lives in QBO. Stage 2: ERPNext `Purchase Invoice` → `Payment Entry`, posting to the GL.
 
 ## Language
 
-### Procurement (lives in ERPNext)
+### Procurement (MVP: Notion DBs; Stage 2: ERPNext)
 
-**Supplier**:
-A supplier of goods to LIM. Native ERPNext DocType. The LIM Custom App adds Custom Fields: `agent_authority` (select), `tone_reference_message_id` (data), `frequency` (select), `follow_up_level` (select), `default_lead_time_days` (int), `order_minimum_text` (small text), `vendor_sends_truck` (check), `we_arrange_freight` (check), `freight_fee` (currency), `pallet_fee` (currency).
-_Avoid_: vendor (use only as a colloquial synonym in conversation; in code and docs, use `Supplier`).
+**Supplier** *(MVP: Notion `Vendor Profiles` DB row; Stage 2: ERPNext `Supplier` DocType)*:
+A supplier of goods to LIM. MVP properties relevant to the agent: `Vendor` (title), `Vendor Status`, `Agent Authority` (Select: `full_auto`/`draft_only`/`review_only`), `Default PO Owner` (Person), `Frequency`, `Follow-Up Level`, `Lead Time (days)`, `Order Minimum`, `Vendor Sends Truck`, `We Arrange Freight`, `Freight Fee`, `Pallet Fee`, `Terms`, `Preferred Payment Method`. Stage 2: same semantics as ERPNext Supplier Custom Fields per ADR 0018 (`agent_authority`, `default_po_owner`, `frequency`, `follow_up_level`, `default_lead_time_days`, `order_minimum_text`, `vendor_sends_truck`, `we_arrange_freight`, `freight_fee`, `pallet_fee`).
+_Avoid_: vendor in code (use only as a colloquial synonym in conversation; in code, use `Supplier`). In Notion the property is literally `Vendor` — that's UI vocabulary; treat it as Supplier.
 
-**Item**:
-The canonical buy/sell item identity, cross-supplier and cross-channel. Native ERPNext DocType. LIM Custom Fields: `storage_type` (select: ambient/refrigerated/frozen), `is_perishable` (check), `default_buy_unit` (link to UOM), `notes_for_agent` (long text).
+**Item** *(MVP: Notion `Catalog` DB relation on Vendor Profiles; Stage 2: ERPNext `Item`)*:
+The canonical buy/sell item identity. MVP catalog lives in Notion as the `Catalog` relation off Vendor Profiles plus the `Line Items` DB rows on invoices. Stage 2: native ERPNext `Item` DocType with LIM Custom Fields (`storage_type`, `is_perishable`, `default_buy_unit`, `notes_for_agent`).
 
-**Item Supplier** *(ERPNext native — joins Item and Supplier)*:
-Per-(supplier, item) knowledge: supplier's SKU for this item, last unit price, lead time, MOQ. LIM Custom Fields if needed.
+**Purchase Order** (PO) *(MVP: Notion `Purchase Orders` DB row; Stage 2: ERPNext `Purchase Order`)*:
+The agreement to buy specific items from a Supplier. MVP identifying property: `Order ID` (auto-increment integer) + `Order Name` (title). Key agent-relevant properties: `Status` (Open/Closed/Cancelled), `Vendor` (relation), `Owner` (Person), `Items Requested` (raw text — the order request from a human), `Line Items` (relation, populated from the invoice when it arrives), `Drafted By Agent` (checkbox), `Capability Version` (text). Formula columns compute state from events: `Has PR Sent`, `Has PO Sent`, `Has Delivery Received`, `Has Invoice Received`, `Has Invoice Logged in QBO`, `Ready to Close`, `Latest Event`, `Latest Event Date`. Stage 2: same semantics as ERPNext Custom Fields (`agent_active`, `drafted_by_capability`, `placeholder_count`, `temporal_workflow_id`, `idempotency_key`).
+_Avoid_: order (ambiguous with sales orders; prefer **PO**).
 
-**Purchase Order** (PO):
-The agreement to buy specific items from a Supplier. Native ERPNext DocType. Identified by ERPNext's `name` (e.g., `LIM-PO-2026-00001`) plus its internal docname. LIM Custom Fields: `agent_active` (check), `drafted_by_capability` (data), `placeholder_count` (int — computed), `temporal_workflow_id` (data), `idempotency_key` (data).
-_Avoid_: order (ambiguous with sales orders; prefer **PO**), purchase, transaction.
+**Items Requested vs Line Items** *(MVP semantic distinction)*:
+`Items Requested` is the **raw order request** — free-text from whoever opened the PO, before placement (e.g., "20 cases palm oil 5L, 10 bags long-grain rice"). `Line Items` come from the **actual invoice** received from the supplier, structured per-row with quantity and unit cost. The place-drafting capability reads `Items Requested`; the bill-parsing capability populates `Line Items`.
 
-**Purchase Receipt** *(ERPNext native — Receive phase)*:
-Record of goods physically arriving from a Supplier for a PO. Carries per-line received_qty, warehouse, batch/serial info.
+**Purchase Order Event** *(MVP: Notion `Purchase Order Events` DB row — the activity log)*:
+An immutable record of something that happened on a PO. Append-only. Twelve `Event Type` values enumerated: `Order Opened`, `Purchase Request Created`, `Purchase Request Sent`, `Quote Received`, `Purchase Order Created`, `Purchase Order Sent`, `Followed Up With Vendor`, `Delivery Received`, `Invoice Received`, `Invoice Logged in QBO`, `Order Closed`, `Order Cancelled`. Carries `Event Date`, `Actor` (Person), `Order` (relation), optional `Related Document`, `Vendor` (relation), `Notes`. This IS the cross-system audit log for MVP — ADR 0014's Activity pattern, instantiated in Notion. Stage 2 destination: `LIM Activity` Custom DocType per ADR 0014.
 
-**Purchase Invoice** *(ERPNext native — Pay phase)*:
-Supplier's request for payment after delivery. Often arrives as a PDF; ERPNext extracts structured fields. Posts to the General Ledger on submit.
+**Purchase Receipt** *(Stage 2 — ERPNext native, Receive phase)*:
+Record of goods physically arriving from a Supplier for a PO. MVP equivalent: `Delivery Received` event on the PO. Carries per-line received_qty, warehouse, batch/serial info (Stage 2 only).
 
-**Payment Entry** *(ERPNext native — Pay phase)*:
-The money sent to settle a Purchase Invoice. Posts to GL.
+**Purchase Invoice / Bill** *(MVP: Notion `Bills` DB; Stage 2: ERPNext `Purchase Invoice`)*:
+Supplier's request for payment after delivery. MVP: `Bills` DB row linked to PO; the PDF lives in `Documents`. Logged in QBO for accounting (event: `Invoice Logged in QBO`). Stage 2: native ERPNext `Purchase Invoice` posts to the General Ledger on submit.
 
-**BOM** (Bill of Materials):
-For Seboye packaging — defines components and routing to produce a finished Item from raw inputs. Native ERPNext DocType.
+**Payment Entry** *(Stage 2 — ERPNext native, Pay phase)*:
+The money sent to settle a Purchase Invoice. Posts to GL. MVP equivalent: QBO bill payment, with the `Invoice Logged in QBO` event marking it.
+
+**BOM** (Bill of Materials) *(Stage 2 — ERPNext native)*:
+For Seboye packaging — defines components and routing to produce a finished Item from raw inputs. Out of scope for MVP.
 
 ### Commerce (lives in Medusa)
 
@@ -52,9 +59,9 @@ Medusa Product mirrors a publishable subset of ERPNext `Item` for storefront dis
 
 ### Platform infrastructure
 
-**Activity** *(cross-system audit log — to be refined during implementation)*:
-An immutable record of something that happened — a state transition, an agent observation, a human action. Polymorphic by target entity (PO, Supplier, Item, message thread, etc.). May live as a Custom DocType in the LIM Custom App or as a thin module elsewhere; the design intent from ADR 0014 carries forward, only the home changes.
-_Avoid_: "event" alone (collides with Frappe's event hooks); "log entry".
+**Activity** *(cross-system audit log)*:
+An immutable record of something that happened — a state transition, an agent observation, a human action. MVP home: Notion `Purchase Order Events` DB for PO-scoped activity; messaging-scoped activity stays in `apps/messaging`. Stage 2 home: `LIM Activity` Custom DocType per ADR 0014, polymorphic by target entity.
+_Avoid_: "event" alone in conversation about Frappe (collides with Frappe's event hooks); "log entry". In MVP Notion-context, the property is literally `Event` and event types are enumerated — that's fine.
 
 **Message** *(in `apps/messaging`, not Medusa or ERPNext)*:
 An inbound or outbound communication on any channel (email, SMS, WhatsApp, Slack, voice, manual, photo). Stored in the messaging service's own Drizzle schema; cross-system references via opaque text IDs.
@@ -68,10 +75,10 @@ Persistent file metadata. SHA256-deduped within each storage backend. Cross-refe
 The Point-of-Sale system at the LIM store. LIM's ~1,810 retail items live in Toast's catalog; sales transactions happen here. Toast's public API is **read-only**; we mirror their catalog + orders into our reporting/audit surfaces but cannot write back. Catalog edits happen in Toast's web back-office or via Toast's Bulk Import CSV — by humans, not the agent. catalog-health-worker (Slice 4) audits drift between Toast Catalog and ERPNext Item and surfaces mismatches for human resolution.
 
 **QBO** *(QuickBooks Online — current AP / GL system)*:
-LIM's current ledger of record. Retires when ERPNext Accounts is in production (per ADR 0005 amendment in ADR 0018).
+LIM's current ledger of record. Stays in place through MVP; the `Invoice Logged in QBO` event marks when a bill has been posted. Retires when ERPNext Accounts is in production (Stage 2 — per ADR 0005 amendment in ADR 0018).
 
-**Notion** *(current operational ERP — to be retired)*:
-The de facto ERP today (vendor profiles, PO database, invoice tracker, recurring obligations, reconciliation log, financial exceptions). Retires when ERPNext is in production.
+**Notion** *(MVP procurement system of record per ADR 0023)*:
+The procurement SoR for MVP. `Vendor Profiles`, `Purchase Orders`, `Purchase Order Events`, `Line Items`, `Bills`, `Invoices`, `Documents` DBs all live here. Stealth reads/writes via the Notion API. Stage 2: ERPNext takes over procurement state; Notion DBs become historical reference.
 
 ### Agent-side terms
 
@@ -82,10 +89,16 @@ The procurement agent. Runs as a long-running Temporal worker (`apps/procurement
 A single LLM-using job in the agent — has its own prompt, structured output schema (Zod), optional read-only tools, and a Temporal activity wrapper. Per ADR 0016. One capability = one focused LLM call preceded by deterministic prep and followed by deterministic writes to ERPNext REST and/or Medusa SDK and/or messaging API.
 
 **`agent_authority`**:
-Per-supplier control over what stealth may commit autonomously. `full_auto` (commits without human approval; downstream gates still apply), `draft_only` (drafts but never sends or marks state without explicit human approval — **default for new and seeded suppliers**), `review_only` (observes and classifies only, doesn't draft). Lives as a Custom Field on ERPNext Supplier.
+Per-supplier control over what stealth may commit autonomously. `full_auto` (commits without human approval; downstream gates still apply), `draft_only` (drafts but never sends or marks state without explicit human approval — **default for new and seeded suppliers**), `review_only` (observes and classifies only, doesn't draft). MVP home: `Vendor Profiles.Agent Authority` Select. Stage 2 home: Custom Field on ERPNext Supplier.
+
+**`Default PO Owner`**:
+Per-vendor Person property on Vendor Profiles. No default; configured per-vendor by whoever handles that vendor's relationship. Both Yemi and Grace are peers in the purchasing group — there's no hierarchical default. When the agent drafts a PO it copies `Default PO Owner` into `Purchase Orders.Owner`. If unset, the agent leaves Owner blank and surfaces it as a setup gap in Slack.
+
+**`Drafted By Agent` / `Capability Version`**:
+Per-PO properties marking that stealth created/touched the row. `Drafted By Agent` (checkbox) is true when any agent capability authored the PO. `Capability Version` (text) records the capability + version that did the last agent write (e.g., `place-drafting@0.1.2`). MVP home: Purchase Orders DB. Stage 2 home: `agent_active` and `drafted_by_capability` Custom Fields on ERPNext Purchase Order.
 
 **Tone reference**:
-A single curated past inbound message pinned per Supplier (`tone_reference_message_id` Custom Field — opaque ref to the messaging service) used to calibrate the tone of agent-drafted outbound. Set by hand; never auto-updated.
+A single curated past inbound message pinned per Supplier — opaque ref to the messaging service — used to calibrate the tone of agent-drafted outbound. Set by hand; never auto-updated. MVP home: stored alongside the Vendor Profiles row (Notion or, more likely, kept entirely in the messaging service indexed by `vendor_id`). Stage 2 home: `tone_reference_message_id` Custom Field on ERPNext Supplier.
 
 **Global pause**:
 A platform-wide flag (Redis-backed with TTL) suppressing all agent auto-fires. Per-supplier authority is checked first; if global pause is on, no auto-fire happens regardless of authority. Toggled via admin control or `/stealth pause Xm` Slack slash command.
@@ -94,29 +107,30 @@ A platform-wide flag (Redis-backed with TTL) suppressing all agent auto-fires. P
 An unresolved field in an agent draft (`[NEEDS PRICE]`, `[NEW ITEM]`, `[STALE: $X, last seen DATE]`). Sending is gated until cleared.
 
 **Coexistence**:
-The pattern by which humans and the agent share authority without explicit take-over. Per ADR 0013. The agent re-reads state at every decision point. Workflows are idempotent. ERPNext webhooks become Temporal signals so long-running workflows notice human edits.
+The pattern by which humans and the agent share authority without explicit take-over. Per ADR 0013. The agent re-reads state at every decision point. Workflows are idempotent. MVP: Notion change polling (or webhook beta if available) becomes Temporal signals. Stage 2: ERPNext webhooks become Temporal signals.
 
-**LIM Custom App**:
-The git-versioned Frappe app that holds LIM-specific extensions of ERPNext — Custom Fields, Custom DocTypes (sparingly), hooks, whitelisted REST methods. Thin by design; heavy logic lives in stealth and peer services.
+**LIM Custom App / `procureops`** *(Stage 2)*:
+The git-versioned Frappe app that holds LIM-specific extensions of ERPNext — Custom Fields, Custom DocTypes (sparingly), hooks, whitelisted REST methods. Thin by design; heavy logic lives in stealth and peer services. Not active until Stage 2 trigger.
 
 ## Relationships
 
-- A **Supplier** has many **Purchase Orders**.
-- A **Purchase Order** has many line items (referencing **Items**).
-- A **Purchase Order** has zero or one **Purchase Receipt** (Receive phase).
-- A **Purchase Receipt** has zero or one **Purchase Invoice** (Pay phase).
-- A **Purchase Invoice** has zero or many **Payment Entries** (could be split).
-- An **Item** appears in many **Item Supplier** rows (one per supplier that carries it).
-- A **Product** (Medusa) mirrors one **Item** (ERPNext) for items LIM publishes to its storefront.
-- An **Activity** targets at most one entity (by `target_entity_type` + `target_entity_id` — types may be cross-system: `purchase_order`, `supplier`, `item`, `message_thread`).
+- A **Supplier** / **Vendor Profile** has many **Purchase Orders**.
+- A **Purchase Order** has many **Line Items** (from the invoice) and one free-text **Items Requested** field (the original request).
+- A **Purchase Order** has many **Purchase Order Events** (append-only audit trail).
+- A **Purchase Order** has zero or many **Bills** (MVP) / **Purchase Invoices** (Stage 2).
+- A **Purchase Order** has zero or many **Documents** (PDFs, attachments).
+- A **Bill** has zero or many **Payment Entries** (Stage 2 — could be split).
+- A **Product** (Medusa) mirrors one **Item** for items LIM publishes to its storefront.
+- An **Activity** / **Purchase Order Event** targets one PO in MVP; in Stage 2 it becomes polymorphic across `purchase_order`, `supplier`, `item`, `message_thread`.
 
 ## Example dialogue
 
 > **Dev**: "When stealth drafts a PO for Yusol, where does it live?"
-> **Owner**: "As a `Purchase Order` in ERPNext. Stealth posts the structured output to a whitelisted Frappe method that creates the PO with `custom_drafted_by_capability='place-drafting@x.y.z'`. The timeline shows the `po_drafted` Activity. If Yusol's Supplier record has `agent_authority='full_auto'` and no placeholders remain, stealth marks the PO Submitted and sends the outbound email via the messaging service. Otherwise it waits for human approval."
+> **Owner (MVP)**: "As a new row in the Notion `Purchase Orders` DB with `Drafted By Agent=true`, `Capability Version='place-drafting@x.y.z'`, `Owner` copied from Yusol's `Default PO Owner`, `Status=Open`, and `Items Requested` carrying the raw order text. Stealth also appends a `Purchase Order Created` row to `Purchase Order Events`. If Yusol's `Agent Authority='full_auto'` and no placeholders remain, stealth sends the outbound email via the messaging service and appends a `Purchase Order Sent` event. Otherwise it waits for human approval."
+> **Owner (Stage 2)**: "Same flow, ERPNext as target — `Purchase Order` DocType, `LIM Activity` rows for events, whitelisted Frappe REST method authoring the writes."
 
 > **Dev**: "And the storefront?"
-> **Owner**: "When we launch the wholesale storefront, Medusa pulls a subset of ERPNext Items (the ones we publish) as Medusa Products. Sales orders go through Medusa with Company/Quote/Approval primitives; on submit they create a corresponding Sales Order in ERPNext for inventory deduction and accounting. ERPNext stays the truth for what's in stock and what's been invoiced."
+> **Owner**: "When we launch the wholesale storefront, Medusa Products are managed in Medusa for MVP. In Stage 2, Medusa pulls a subset of ERPNext Items (the ones we publish) as Medusa Products. Sales orders go through Medusa with Company/Quote/Approval primitives; on submit (Stage 2) they create a corresponding Sales Order in ERPNext for inventory deduction and accounting."
 
 ## Flagged ambiguities
 
@@ -125,5 +139,5 @@ The git-versioned Frappe app that holds LIM-specific extensions of ERPNext — C
 - **"Account"** — never used bare. Disambiguate: **Supplier** (the business), **ChannelAccount** (a registered messaging identity), **Account** (ERPNext's chart-of-accounts entry — GL).
 - **"Event"** — domain people may say "event" meaning **Activity** (something that happened, recorded in the audit log). Don't confuse with Frappe Hooks (server-side event handlers) or Temporal signals.
 - **"Item"** — ERPNext's canonical buy/sell unit. Don't confuse with Medusa's "ProductVariant" — the storefront mirror.
-- **"Status"** — disambiguate which: **Supplier.disabled** (ERPNext), **Purchase Order.workflow_state** or `.docstatus` (ERPNext FSM), **agent_authority** (LIM Custom Field), our internal **Place/Receive/Pay phase** vocabulary.
+- **"Status"** — disambiguate which: **Vendor Status** (Notion: New/Qualifying/Active/On Hold/Discontinued/Blacklisted), **Purchase Order.Status** (Notion: Open/Closed/Cancelled — MVP; ERPNext `workflow_state` / `docstatus` — Stage 2), **Agent Authority** (Notion Vendor Profiles Select), our internal **Place/Receive/Pay phase** vocabulary.
 - **"Cancelled"** — flavors: Place-phase **Cancelled** (we backed out before/during ordering — PO `docstatus=2`), Receive-phase **Vendor Cancelled** (supplier reneged — Purchase Receipt not created), Pay-phase **Written Off** (no settlement happened — Purchase Invoice cancelled / written off).

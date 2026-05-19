@@ -4,9 +4,9 @@ Guidance for AI coding agents working in this repo. `CLAUDE.md` is a symlink to 
 
 ## Architecture in three sentences
 
-LIM's commerce + procurement platform is a **service-oriented architecture across multiple runtimes**: **ERPNext** (Frappe) is the system of record for procurement / vendors / items / inventory / accounting / BOMs; **Medusa** is scoped to commerce primitives (B2B Company/Employee/Quote/Approval + future wholesale storefront); **stealth** is the agent layer (Temporal worker + AI capabilities); **`apps/messaging`** is a multi-channel inbound/outbound communications peer service; **catalog-health-worker** audits Toast Catalog vs ERPNext Item drift. Read **ADR 0018** before doing any architectural work.
+LIM's commerce + procurement platform is a **service-oriented architecture across multiple runtimes**. **For MVP (Stage 1) per ADR 0023, the procurement system of record is Notion** — the existing `Vendor Profiles`, `Purchase Orders`, and `Purchase Order Events` databases. **Medusa** is scoped to commerce primitives (B2B Company/Employee/Quote/Approval + future wholesale storefront); **stealth** is the agent layer (Temporal worker + AI capabilities) that reads/writes Notion via the Notion API; **`apps/messaging`** is a multi-channel inbound/outbound communications peer service. **Stage 2 (per ADR 0018) swaps the procurement write target from Notion to ERPNext + `procureops`** once LIM has run on Notion-via-agent for 3+ months without major incident.
 
-The first big call before reading anything else: **does the work touch procurement data (Supplier/PO/Item/Inventory/GL)? It lives in ERPNext, not Medusa.** Build it in the `procureops` Custom App (separate repo, see ADR 0019) using Frappe primitives.
+The first big call before reading anything else: **does the work touch procurement data (Vendor / PO / PO Event / Line Item / Bill / Document)? For MVP it lives in Notion.** Read **ADR 0023** (MVP shape) and **ADR 0018** (Stage 2 destination) before doing any architectural work.
 
 ## Repo at a glance
 
@@ -17,25 +17,30 @@ Turborepo monorepo. The `b2b-starter` repo holds the Medusa side + monorepo coor
 | `apps/backend` (this repo) | Medusa.js v2 — commerce primitives, B2B starter modules (Company, Employee, Quote, Approval), future wholesale storefront support | Node, Postgres, Redis |
 | `apps/storefront` (this repo) | Next.js 15 storefront | Next.js |
 | `apps/messaging` (this repo) | Fastify + Drizzle messaging service — channel-agnostic inbound/outbound (email/SMS/Slack/WhatsApp/voice/manual) | Node, Postgres `messaging` schema |
-| `apps/procurement-agent` (this repo) | Temporal worker — stealth's AI capabilities, capability shape per ADR 0016 | Node, Temporal Cloud |
-| `procureops` ([separate repo](https://github.com/yemi-lagosinternationalmarket/procureops)) | LIM-specific Frappe Custom App — Custom Fields + Custom DocTypes + whitelisted REST methods on top of ERPNext | Python (Frappe) |
-| `catalog-health-worker` (separate repo) | Vercel Workflow DevKit — daily Toast catalog audit; pivots to audit Toast vs ERPNext Item drift | Vercel Workflows + Upstash |
+| `apps/procurement-agent` (this repo) | Temporal worker — stealth's AI capabilities, capability shape per ADR 0016. Procurement write target: **Notion API** for MVP; Frappe REST for Stage 2. | Node, Temporal Cloud |
+| Notion workspace (MVP procurement SoR per ADR 0023) | Vendor Profiles DB (`collection://2ab90680-51d2-806c-bd84-000bc7f84a33`), Purchase Orders DB (`collection://5bccc26b-1992-4691-a7ed-11f3ecd8cff0`), Purchase Order Events DB (`collection://2c3fd6b3-b299-443c-a01c-b7677905eeb8`), Line Items / Bills / Documents | Notion API |
+| `procureops` ([separate repo](https://github.com/yemi-lagosinternationalmarket/procureops)) — **Stage 2** | LIM-specific Frappe Custom App — Custom Fields + Custom DocTypes + whitelisted REST methods on top of ERPNext | Python (Frappe) |
+| `catalog-health-worker` (separate repo) — **Stage 2** | Vercel Workflow DevKit — daily Toast catalog audit; pivots to audit Toast vs ERPNext Item drift | Vercel Workflows + Upstash |
 | `stealth` (separate repo) | Archive reference for the prior Temporal+Drizzle+AI-Gateway design; not deployed; capability prompts/schemas/tools are being ported into `apps/procurement-agent` | — |
 
 ## Decisions of record (`docs/adr/`)
 
-19 ADRs total. Read them when in doubt:
+23 ADRs total. Read them when in doubt:
 
 - **0001–0009** — imported from stealth: three coupled FSMs (Place/Receive/Pay), runtime stack, system-observes pattern, auto-fire with downstream gates, QBO retirement plan, seeded item catalog, workflow-driven agentic architecture, model selection matrix, pinned tone references
 - **0010, 0012** — SUPERSEDED by 0018
 - **0011** — external system integrations abstracted by `system` / `channel` enum (still active)
 - **0013** — coexistence over takeover (agent reads state, never claims it)
-- **0014** — platform-wide Activity + Attachment patterns (partially superseded by 0018; design intent carries forward as the `LIM Activity` DocType)
-- **0015** — per-supplier `agent_authority` + global pause as the trust gradient (lives as Custom Field on ERPNext Supplier per 0018)
-- **0016** — capability shape (prompt + Zod schema + read-only tools + Temporal activity wrapper)
+- **0014** — platform-wide Activity + Attachment patterns (design intent carries forward as the Purchase Order Events DB for MVP; `LIM Activity` Custom DocType for Stage 2)
+- **0015** — per-supplier `agent_authority` + global pause as the trust gradient (lives as `Vendor Profiles.Agent Authority` Select for MVP; Supplier Custom Field for Stage 2)
+- **0016** — capability shape (prompt + Zod schema + read-only tools + Temporal activity wrapper) — unchanged across Stage 1/2
 - **0017** — considered Conductor OSS; staying with Temporal
-- **0018** — **the pivot** — ERPNext as ERP system of record, Medusa scoped to commerce
-- **0019** — LIM Custom App licensing posture (separable Frappe app, ERPNext GPL v3, license `procureops` GPL v3 if ever distributed)
+- **0018** — ERPNext as ERP system of record, Medusa scoped to commerce — **Stage 2 destination**
+- **0019** — LIM Custom App licensing posture — Stage 2
+- **0020** — Frappe Cloud as ERPNext hosting — Stage 2
+- **0021** — Site-per-tenant SaaS multi-tenancy pattern — Stage 2 / SaaS
+- **0022** — `tenant_id` from day zero in shared services (active now in `apps/messaging` + agent; hardcoded UUID for MVP)
+- **0023** — **MVP pivot** — Notion as procurement system of record for Stage 1; ERPNext deferred to Stage 2
 
 ## Domain language
 
@@ -57,7 +62,21 @@ Medusa now holds **B2B commerce primitives + storefront**, not procurement. When
 
 For framework learning end-to-end: `learn-medusa:learning-medusa`. Fall back to the Medusa MCP server (`mcp__medusa__ask_medusa_question`) for specific method signatures after consulting the skill.
 
-### ERPNext / Frappe (procurement, inventory, accounting, BOMs)
+### Notion (MVP procurement system of record per ADR 0023)
+
+Stealth reads/writes procurement state via the **Notion API**. Use the Notion MCP server (`mcp__claude_ai_Notion__*`) for schema inspection and ad-hoc data work; capability `activity.ts` files use the official Notion SDK (`@notionhq/client`) at runtime.
+
+Three databases hold MVP procurement state:
+
+| DB | ID | Purpose |
+|---|---|---|
+| Vendor Profiles | `collection://2ab90680-51d2-806c-bd84-000bc7f84a33` | Vendor master — includes `Agent Authority` (Select: `full_auto`/`draft_only`/`review_only`) and `Default PO Owner` (Person) for the agent |
+| Purchase Orders | `collection://5bccc26b-1992-4691-a7ed-11f3ecd8cff0` | PO header — agent-drafted POs have `Drafted By Agent`=true and `Capability Version`=<version> |
+| Purchase Order Events | `collection://2c3fd6b3-b299-443c-a01c-b7677905eeb8` | Append-only event log — 12 event types enumerated as multi-select; formulas on Purchase Orders compute state from these |
+
+Writes are append-only on the Events DB; PO header updates are limited to property patches (`Owner`, `Status`, `Drafted By Agent`, `Capability Version`, etc.). Idempotency: tag each agent-appended Event row with a stable composite key derived from `{workflow_id}.{capability}.{attempt}`; check before append.
+
+### ERPNext / Frappe (procurement, inventory, accounting, BOMs) — Stage 2
 
 LIM-specific extensions live in the **`procureops` Custom App** in its own repo. Rules from ADR 0019:
 
@@ -85,7 +104,7 @@ Capability shape (ADR 0016): one folder per capability under `apps/procurement-a
 - `activity.test.ts` — Vitest with `@temporalio/testing`, fixture-driven, golden snapshots
 
 Write paths target three systems:
-- **Procurement state** → Frappe REST (e.g., `procureops.api.create_po_draft`)
+- **Procurement state** → **Notion API** for MVP (create PO pages, append Purchase Order Events, patch Vendor Profiles); Frappe REST (`procureops.api.create_po_draft`) for Stage 2
 - **Commerce state** → Medusa SDK (`sdk.admin.workflows.<name>.run`)
 - **Messaging state** → `apps/messaging` HTTP API
 
@@ -93,9 +112,9 @@ Write paths target three systems:
 
 Channel-agnostic. Per ADR 0011, channels are an enum (`email` / `sms` / `whatsapp` / `slack` / `voice` / `manual` / `photo`), not separate modules. Drizzle ORM, own Postgres `messaging` schema. Stealth + Medusa admin widgets are consumers.
 
-### Catalog-health-worker
+### Catalog-health-worker (Stage 2)
 
-Vercel Workflow DevKit service. Audits Toast Catalog (read-only) vs ERPNext Item (canonical) and surfaces drift as `LIM Activity` rows + Slack alerts. No auto-write to Toast — humans resolve via Toast's web UI or Bulk Import CSV.
+Deferred to Stage 2 alongside ERPNext per ADR 0023. Vercel Workflow DevKit service. Audits Toast Catalog (read-only) vs ERPNext Item (canonical) and surfaces drift as `LIM Activity` rows + Slack alerts. No auto-write to Toast — humans resolve via Toast's web UI or Bulk Import CSV.
 
 ## Issue tracker
 
@@ -113,8 +132,9 @@ When closing a superseded or pivoted issue, leave a comment explaining the super
 - **Don't commit `workflow_comparison.md`** (research artifact, deleted; ignore if it reappears).
 - **For Temporal work**: invoke `temporal-developer` skill before writing workflows or activities.
 - **For Medusa work**: invoke the relevant `medusa-dev` skill before writing modules, workflows, or API routes.
-- **For ERPNext work**: read ADR 0019 first. Stay in the `procureops` repo. Use Fixtures, not patches.
-- **Pivot communication**: when an architectural shift lands (like ADR 0018), update CONTEXT.md, write/supersede ADRs, re-cut affected issues (close old + create new), update this file.
+- **For procurement work (MVP)**: read ADR 0023. Write target is the Notion API. Use the Notion MCP for schema inspection; `@notionhq/client` at runtime.
+- **For ERPNext work (Stage 2)**: read ADR 0019 first. Stay in the `procureops` repo. Use Fixtures, not patches. Not active until Stage 2 trigger.
+- **Pivot communication**: when an architectural shift lands (like ADR 0018 or 0023), update CONTEXT.md, write/supersede ADRs, re-cut affected issues (close old + create new), update this file.
 
 ## Skills inventory (relevant to this repo)
 
